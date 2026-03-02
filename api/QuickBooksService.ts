@@ -247,11 +247,14 @@ export class QuickBooksService {
   }
 
   /**
-   * Sparse update helper: reads the current entity to get SyncToken, merges patch, and updates.
+   * Sparse update helper: reads the current entity, merges patch on top, and updates.
+   * This ensures required fields (e.g. VendorRef on Bill, AccountRef on Purchase)
+   * are always present even if the caller only sends the fields they want to change.
    */
   async sparseUpdate(entityName: string, id: string, patch: Record<string, any>): Promise<any> {
     const current = await this.read(entityName, id)
     const merged = {
+      ...current,
       ...patch,
       Id: current.Id,
       SyncToken: current.SyncToken,
