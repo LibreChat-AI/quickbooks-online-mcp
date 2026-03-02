@@ -14,17 +14,50 @@ Provides 50 tools for managing QuickBooks entities (customers, invoices, bills, 
 ```
 api/
 ├── index.ts              # Hono app: OAuth discovery, /register, /authorize, /token, MCP routes
-├── QuickBooksMCP.ts      # McpAgent Durable Object with all 50 tools
+├── QuickBooksMCP.ts      # McpAgent Durable Object with all tools
 ├── QuickBooksService.ts  # Fetch-based QB API client (generic CRUD + query builder)
 └── lib/
     └── qb-auth.ts        # OAuth middleware and token exchange helpers
 ```
 
-## Prerequisites
+## Getting Your Intuit Developer Credentials
 
-1. An [Intuit Developer](https://developer.intuit.com/) account
-2. A QuickBooks app with OAuth 2.0 credentials (Client ID + Client Secret)
-3. A connected QuickBooks company (sandbox or production)
+The Intuit Developer sandbox is **completely free** — no QuickBooks subscription needed for testing.
+
+### Step 1: Create a Free Developer Account
+
+1. Go to [developer.intuit.com](https://developer.intuit.com/) and sign up (no credit card required)
+2. Once registered, Intuit automatically creates a **sandbox company** with sample data
+
+### Step 2: Create an App
+
+1. After logging in, go to **My Hub > App Dashboard**
+2. Click **Create an app**
+3. Select **QuickBooks Online and Payments**
+4. Name it anything (e.g. "QBO MCP Server")
+5. Select the **`com.intuit.quickbooks.accounting`** scope
+6. Click **Create app**
+
+### Step 3: Get Your Client ID and Client Secret
+
+1. Inside your app, click **Keys & OAuth** in the left nav
+2. Make sure you're on the **Development** tab (not Production)
+3. Click **Show credentials**
+4. Copy your **Client ID** and **Client Secret**
+
+### Step 4: Add the Redirect URI
+
+Still in **Keys & OAuth**:
+
+1. Scroll to **Redirect URIs**
+2. Click **Add URI**
+3. Add the redirect URI for your MCP client (see table below)
+4. Save
+
+| MCP Client | Redirect URI |
+|---|---|
+| LibreChat (Docker or local) | `http://localhost:3080/api/mcp/quickbooks/oauth/callback` |
+| MCP Inspector | Use the callback URL shown in the Inspector UI |
 
 ## Setup
 
@@ -36,7 +69,7 @@ npm install
 
 ### 2. Configure secrets
 
-Copy the template and fill in your credentials:
+Copy the template and fill in your credentials from the steps above:
 
 ```bash
 cp .dev.vars.template .dev.vars
@@ -49,17 +82,7 @@ QUICKBOOKS_REALM_ID=your_company_id        # Optional if passed via header
 QUICKBOOKS_ENVIRONMENT=sandbox              # 'sandbox' or 'production'
 ```
 
-### 3. Configure redirect URI
-
-In the [Intuit Developer Portal](https://developer.intuit.com/), add the appropriate redirect URI for your MCP client:
-
-| MCP Client | Redirect URI |
-|---|---|
-| LibreChat (Docker) | `http://localhost:3080/api/mcp/quickbooks/oauth/callback` |
-| LibreChat (local) | `http://localhost:3080/api/mcp/quickbooks/oauth/callback` |
-| MCP Inspector | Use the callback URL shown in the Inspector UI |
-
-### 4. Start the server
+### 3. Start the server
 
 ```bash
 npx wrangler dev
@@ -67,7 +90,7 @@ npx wrangler dev
 
 The server starts at `http://localhost:3000`.
 
-### 5. Verify
+### 4. Verify
 
 ```bash
 # Health check
@@ -95,11 +118,25 @@ mcpServers:
     customUserVars:
       QB_REALM_ID:
         title: "QuickBooks Realm ID"
-        description: "Your QuickBooks Company ID (found in Intuit Developer Portal)"
+        description: "Your QuickBooks Company ID (found in Intuit Developer Portal under Sandbox settings)"
       QB_ENVIRONMENT:
         title: "QuickBooks Environment"
         description: "Enter 'sandbox' or 'production' (defaults to sandbox)"
 ```
+
+You must also add the server's address to `mcpSettings.allowedDomains` — LibreChat requires this for any local/non-public MCP server URL:
+
+```yaml
+mcpSettings:
+  allowedDomains:
+    - "http://localhost:3000"
+```
+
+When LibreChat starts, it will:
+1. Detect the server needs OAuth and prompt you to authorize
+2. Redirect you to Intuit's OAuth page
+3. After authorizing, ask you for the **Realm ID** and **Environment** via the customUserVar prompts
+4. Connect and expose all QuickBooks tools
 
 ### Other MCP Clients
 
@@ -114,16 +151,16 @@ Connect to `/mcp` (Streamable HTTP) or `/sse` (SSE) with:
 
 The Realm ID is the QuickBooks **Company ID** of the company you want to access. This is **not** the same as your App ID or the developer account Company ID.
 
-> **Common confusion:** The Intuit Developer Portal shows multiple IDs. Your app has a UUID App ID (e.g. `5ff5fa24-...`) and the app overview page shows a Company ID for your developer account. Neither of these is the Realm ID. The Realm ID is the Company ID of the **sandbox or production company with actual accounting data**.
+> **Common confusion:** The Intuit Developer Portal shows multiple IDs. Your app has a UUID App ID (e.g. `5ff5fa24-...`) and the app overview page shows a Company ID for your developer workspace. **Neither of these is the Realm ID.** The Realm ID is the Company ID of the **sandbox or production company with actual accounting data**.
 
 **For sandbox:**
 1. Go to [developer.intuit.com](https://developer.intuit.com) → your app → **Sandbox** tab
 2. Under your sandbox company, the **Company ID** is the Realm ID (a numeric string like `9341456502676660`)
 
 **For production:**
-1. A real QuickBooks company must be connected to your app via OAuth
-2. The Company ID is returned as the `realmId` query parameter in the OAuth callback URL
-3. You can also find it in the QuickBooks Online URL when logged in: `https://app.qbo.intuit.com/app/homepage?company={realmId}`
+1. **Keyboard shortcut** (while logged into QBO): `Ctrl+Alt+?` (Windows) or `Control+Option+?` (Mac) — shows Company ID on screen
+2. **Settings page**: Gear icon → Subscriptions and billing → Company ID is at the top
+3. **OAuth callback**: Intuit includes `realmId` as a query parameter in the redirect URL
 
 ## Available Tools (50)
 
@@ -140,6 +177,14 @@ The Realm ID is the QuickBooks **Company ID** of the company you want to access.
 | **Journal Entry** | `create_journal_entry` | `get_journal_entry` | `update_journal_entry` | `delete_journal_entry` | `search_journal_entries` |
 | **Bill Payment** | `create_bill_payment` | `get_bill_payment` | `update_bill_payment` | `delete_bill_payment` | `search_bill_payments` |
 | **Purchase** | `create_purchase` | `get_purchase` | `update_purchase` | `delete_purchase` | `search_purchases` |
+
+### Tool Schemas
+
+All create tools have **typed Zod schemas** matching the QuickBooks API spec — required fields are enforced, optional fields are documented with descriptions. This gives LLMs clear guidance on what to send. For example, `create_bill` requires `VendorRef` and `Line` items with proper `AccountBasedExpenseLineDetail` or `ItemBasedExpenseLineDetail` nesting.
+
+All update tools **auto-fetch the current entity** to get `SyncToken` and required fields, so callers only need to provide the `Id` and the fields they want to change.
+
+All delete tools only need the entity `id` — `SyncToken` is fetched automatically.
 
 ### Search Tools
 
@@ -181,8 +226,9 @@ Update your MCP client's URL to point to the deployed worker URL.
 |---|---|---|
 | API Base URL | `sandbox-quickbooks.api.intuit.com` | `quickbooks.api.intuit.com` |
 | Data | Sample data from Intuit | Real company data |
+| Cost | Free (developer account only) | Requires QBO subscription (Simple Start+) |
 | App Review | Not required | Required by Intuit |
-| OAuth Keys | Sandbox keys from dev portal | Production keys (after app approval) |
+| OAuth Keys | Development keys from dev portal | Production keys (after app approval) |
 
 Sandbox is the default. Set `QUICKBOOKS_ENVIRONMENT=production` or pass `X-QB-Environment: production` header to use production.
 
