@@ -5,7 +5,35 @@ import { z } from "zod"
 import { QuickBooksService } from "./QuickBooksService.ts"
 // QBAuthContext is declared globally in types.d.ts
 
-// Shared schemas used across multiple tools
+// =============================================================================
+// Shared Zod schemas matching QuickBooks Online API spec
+// =============================================================================
+
+/** Reference to another QB entity { value: "id", name: "display name" } */
+const refSchema = z.object({
+  value: z.string().describe("Entity ID"),
+  name: z.string().optional().describe("Display name (optional, for readability)"),
+}).describe("QuickBooks entity reference")
+
+const addressSchema = z.object({
+  Line1: z.string().optional(),
+  Line2: z.string().optional(),
+  Line3: z.string().optional(),
+  City: z.string().optional(),
+  Country: z.string().optional(),
+  CountrySubDivisionCode: z.string().optional().describe("State/province code"),
+  PostalCode: z.string().optional(),
+}).describe("Physical/mailing address")
+
+const phoneSchema = z.object({
+  FreeFormNumber: z.string().describe("Phone number"),
+}).describe("Phone number")
+
+const emailSchema = z.object({
+  Address: z.string().describe("Email address"),
+}).describe("Email address")
+
+/** Search options shared across all search tools */
 const searchOptionsSchema = {
   criteria: z
     .array(
@@ -28,10 +56,83 @@ const searchOptionsSchema = {
   count: z.boolean().optional().describe("Return count instead of results"),
 }
 
+// -- Line item schemas for transactions --
+
+const salesItemLineSchema = z.object({
+  Amount: z.number().describe("Line total amount"),
+  DetailType: z.literal("SalesItemLineDetail"),
+  Description: z.string().optional().describe("Line description (max 4000 chars)"),
+  SalesItemLineDetail: z.object({
+    ItemRef: refSchema.describe("Reference to the Item being sold"),
+    Qty: z.number().optional().describe("Quantity"),
+    UnitPrice: z.number().optional().describe("Price per unit"),
+    TaxCodeRef: refSchema.optional().describe("Tax code reference"),
+    ServiceDate: z.string().optional().describe("Date service was performed (YYYY-MM-DD)"),
+    DiscountRate: z.number().optional().describe("Discount percentage"),
+    DiscountAmt: z.number().optional().describe("Discount amount"),
+  }),
+}).describe("Sales line item (for invoices and estimates)")
+
+const accountExpenseLineSchema = z.object({
+  Amount: z.number().describe("Line total amount"),
+  DetailType: z.literal("AccountBasedExpenseLineDetail"),
+  Description: z.string().optional().describe("Line description"),
+  AccountBasedExpenseLineDetail: z.object({
+    AccountRef: refSchema.describe("Expense account reference"),
+    CustomerRef: refSchema.optional().describe("Customer for billable expenses"),
+    ClassRef: refSchema.optional().describe("Class reference"),
+    BillableStatus: z.enum(["Billable", "NotBillable", "HasBeenBilled"]).optional(),
+    TaxCodeRef: refSchema.optional(),
+  }),
+}).describe("Account-based expense line (for bills and purchases)")
+
+const itemExpenseLineSchema = z.object({
+  Amount: z.number().describe("Line total amount"),
+  DetailType: z.literal("ItemBasedExpenseLineDetail"),
+  Description: z.string().optional().describe("Line description"),
+  ItemBasedExpenseLineDetail: z.object({
+    ItemRef: refSchema.describe("Item reference"),
+    Qty: z.number().optional().describe("Quantity"),
+    UnitPrice: z.number().optional().describe("Unit price"),
+    CustomerRef: refSchema.optional().describe("Customer for billable expenses"),
+    BillableStatus: z.enum(["Billable", "NotBillable", "HasBeenBilled"]).optional(),
+    TaxCodeRef: refSchema.optional(),
+  }),
+}).describe("Item-based expense line (for bills and purchases)")
+
+const expenseLineSchema = z.union([accountExpenseLineSchema, itemExpenseLineSchema])
+  .describe("Expense line item — use AccountBasedExpenseLineDetail for account-based or ItemBasedExpenseLineDetail for item-based")
+
+const journalEntryLineSchema = z.object({
+  Amount: z.number().describe("Line amount"),
+  DetailType: z.literal("JournalEntryLineDetail"),
+  Description: z.string().optional().describe("Line description"),
+  JournalEntryLineDetail: z.object({
+    PostingType: z.enum(["Debit", "Credit"]).describe("Debit or Credit"),
+    AccountRef: refSchema.describe("Account to debit or credit"),
+    Entity: z.object({
+      Type: z.enum(["Customer", "Vendor", "Employee"]).optional(),
+      EntityRef: refSchema.optional(),
+    }).optional().describe("Associated entity"),
+    ClassRef: refSchema.optional(),
+    DepartmentRef: refSchema.optional(),
+  }),
+}).describe("Journal entry line item (debits must equal credits)")
+
+const billPaymentLineSchema = z.object({
+  Amount: z.number().describe("Amount applied to this bill"),
+  LinkedTxn: z.array(z.object({
+    TxnId: z.string().describe("Bill ID being paid"),
+    TxnType: z.literal("Bill"),
+  })).describe("Link to the bill being paid"),
+}).describe("Bill payment line linking to a specific bill")
+
+// =============================================================================
+// McpAgent with all 50 tools
+// =============================================================================
+
 export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
-  async init() {
-    // Initialize any necessary state
-  }
+  async init() {}
 
   get qbService() {
     return new QuickBooksService(
@@ -46,951 +147,681 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
   formatResponse = (
     description: string,
     data: unknown
-  ): { content: Array<{ type: "text"; text: string }> } => {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `${description}\n\n${JSON.stringify(data, null, 2)}`,
-        },
-      ],
-    }
-  }
+  ): { content: Array<{ type: "text"; text: string }> } => ({
+    content: [{ type: "text", text: `${description}\n\n${JSON.stringify(data, null, 2)}` }],
+  })
 
   formatError = (
     error: unknown
   ): { content: Array<{ type: "text"; text: string }>; isError: true } => {
     const message =
       error instanceof Error ? error.message : typeof error === "string" ? error : JSON.stringify(error)
-    return {
-      content: [{ type: "text", text: message }],
-      isError: true,
-    }
+    return { content: [{ type: "text", text: message }], isError: true }
   }
 
   get server() {
-    const server = new McpServer({
-      name: "QuickBooks Online",
-      version: "1.0.0",
-    })
+    const server = new McpServer({ name: "QuickBooks Online", version: "1.0.0" })
 
     // =========================================================================
     // CUSTOMERS
     // =========================================================================
 
-    server.tool(
-      "create_customer",
-      "Create a customer in QuickBooks Online.",
-      { customer: z.any().describe("Customer object to create") },
-      async ({ customer }) => {
+    server.registerTool("create_customer", { description: "Create a customer in QuickBooks Online.", inputSchema: {
+        DisplayName: z.string().describe("Unique display name for the customer (required)"),
+        GivenName: z.string().optional().describe("First name"),
+        MiddleName: z.string().optional().describe("Middle name"),
+        FamilyName: z.string().optional().describe("Last name"),
+        CompanyName: z.string().optional().describe("Company/business name"),
+        Title: z.string().optional().describe("Title (Mr., Mrs., etc.)"),
+        Suffix: z.string().optional().describe("Suffix (Jr., Sr., etc.)"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Primary email"),
+        PrimaryPhone: phoneSchema.optional().describe("Primary phone"),
+        Mobile: phoneSchema.optional().describe("Mobile phone"),
+        BillAddr: addressSchema.optional().describe("Billing address"),
+        ShipAddr: addressSchema.optional().describe("Shipping address"),
+        Notes: z.string().optional().describe("Free-form notes"),
+        Taxable: z.boolean().optional().describe("Is customer taxable"),
+        PreferredDeliveryMethod: z.enum(["Print", "Email", "None"]).optional(),
+        ParentRef: refSchema.optional().describe("Parent customer (for sub-customers)"),
+        Job: z.boolean().optional().describe("Is this a sub-customer/job"),
+        CurrencyRef: refSchema.optional().describe("Currency reference (multi-currency)"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Customer", customer)
+          const result = await this.qbService.create("Customer", data)
           return this.formatResponse("Customer created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_customer",
-      "Get a customer by Id from QuickBooks Online.",
-      { id: z.string().describe("Customer ID") },
-      async ({ id }) => {
+    server.registerTool("get_customer", { description: "Get a customer by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Customer ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Customer", id)
           return this.formatResponse(`Customer ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_customer",
-      "Update an existing customer in QuickBooks Online.",
-      { customer: z.any().describe("Customer object with Id and SyncToken") },
-      async ({ customer }) => {
+    server.registerTool("update_customer", { description: "Update a customer in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Customer ID to update"),
+        DisplayName: z.string().optional().describe("Display name"),
+        GivenName: z.string().optional().describe("First name"),
+        FamilyName: z.string().optional().describe("Last name"),
+        CompanyName: z.string().optional().describe("Company name"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Email"),
+        PrimaryPhone: phoneSchema.optional().describe("Phone"),
+        BillAddr: addressSchema.optional().describe("Billing address"),
+        ShipAddr: addressSchema.optional().describe("Shipping address"),
+        Notes: z.string().optional().describe("Notes"),
+        Active: z.boolean().optional().describe("Active status"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.update("Customer", customer)
+          const result = await this.qbService.sparseUpdate("Customer", data.Id, data)
           return this.formatResponse("Customer updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_customer",
-      "Delete (make inactive) a customer in QuickBooks Online.",
-      { idOrEntity: z.any().describe("Customer ID or entity object with Id and SyncToken") },
-      async ({ idOrEntity }) => {
+    server.registerTool("delete_customer", { description: "Delete (make inactive) a customer in QuickBooks Online.", inputSchema: { id: z.string().describe("Customer ID") } }, async ({ id }) => {
         try {
-          // Customers cannot be truly deleted in QB — they are made inactive
-          let entity: any
-          if (typeof idOrEntity === "string" || typeof idOrEntity === "number") {
-            entity = await this.qbService.read("Customer", String(idOrEntity))
-          } else {
-            entity = idOrEntity
-          }
-          entity.Active = false
-          const result = await this.qbService.update("Customer", entity)
+          const result = await this.qbService.sparseUpdate("Customer", id, { Active: false })
           return this.formatResponse("Customer deactivated.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_customers", "Search customers in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_customers", { description: "Search customers in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, CompanyName, PrimaryEmailAddr, PrimaryPhone, Balance, Active, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Customer", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} customers.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} customers.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // INVOICES
     // =========================================================================
 
-    server.tool(
-      "create_invoice",
-      "Create an invoice in QuickBooks Online.",
-      {
-        customer_ref: z.string().min(1).describe("Customer ID"),
-        line_items: z
-          .array(
-            z.object({
-              item_ref: z.string().min(1).describe("Item ID"),
-              qty: z.number().positive().describe("Quantity"),
-              unit_price: z.number().nonnegative().describe("Unit price"),
-              description: z.string().optional().describe("Line description"),
-            })
-          )
-          .min(1)
-          .describe("Invoice line items"),
-        doc_number: z.string().optional().describe("Document number"),
-        txn_date: z.string().optional().describe("Transaction date (YYYY-MM-DD)"),
-      },
-      async ({ customer_ref, line_items, doc_number, txn_date }) => {
+    server.registerTool("create_invoice", { description: "Create an invoice in QuickBooks Online.", inputSchema: {
+        CustomerRef: refSchema.describe("Customer to invoice (required)"),
+        Line: z.array(salesItemLineSchema).min(1).describe("Invoice line items (at least one required)"),
+        DocNumber: z.string().optional().describe("Invoice number (max 21 chars)"),
+        TxnDate: z.string().optional().describe("Transaction date (YYYY-MM-DD)"),
+        DueDate: z.string().optional().describe("Payment due date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo (max 4000 chars)"),
+        CustomerMemo: z.object({ value: z.string() }).optional().describe("Message to customer"),
+        BillAddr: addressSchema.optional().describe("Billing address"),
+        ShipAddr: addressSchema.optional().describe("Shipping address"),
+        BillEmail: emailSchema.optional().describe("Email to send invoice to"),
+        SalesTermRef: refSchema.optional().describe("Sales terms"),
+        DepartmentRef: refSchema.optional().describe("Department/location"),
+        Deposit: z.number().optional().describe("Deposit amount"),
+        AllowOnlinePayment: z.boolean().optional().describe("Allow online payment"),
+        AllowOnlineCreditCardPayment: z.boolean().optional().describe("Allow credit card payment"),
+        AllowOnlineACHPayment: z.boolean().optional().describe("Allow ACH payment"),
+      } }, async (data) => {
         try {
-          const payload: any = {
-            CustomerRef: { value: customer_ref },
-            Line: line_items.map((l, idx) => ({
-              Id: `${idx + 1}`,
-              LineNum: idx + 1,
-              Description: l.description || undefined,
-              Amount: l.qty * l.unit_price,
-              DetailType: "SalesItemLineDetail",
-              SalesItemLineDetail: {
-                ItemRef: { value: l.item_ref },
-                Qty: l.qty,
-                UnitPrice: l.unit_price,
-              },
-            })),
-            DocNumber: doc_number,
-            TxnDate: txn_date,
-          }
-          const result = await this.qbService.create("Invoice", payload)
+          const result = await this.qbService.create("Invoice", data)
           return this.formatResponse("Invoice created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "read_invoice",
-      "Read a single invoice from QuickBooks Online by its ID.",
-      { invoice_id: z.string().min(1).describe("Invoice ID") },
-      async ({ invoice_id }) => {
+    server.registerTool("read_invoice", { description: "Read an invoice from QuickBooks Online by its ID.", inputSchema: { id: z.string().describe("Invoice ID") } }, async ({ id }) => {
         try {
-          const result = await this.qbService.read("Invoice", invoice_id)
-          return this.formatResponse(`Invoice ${invoice_id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+          const result = await this.qbService.read("Invoice", id)
+          return this.formatResponse(`Invoice ${id} retrieved.`, result)
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_invoice",
-      "Update an existing invoice in Quickbooks by ID (sparse update).",
-      {
-        invoice_id: z.string().min(1).describe("Invoice ID"),
-        patch: z.record(z.any()).describe("Fields to update"),
-      },
-      async ({ invoice_id, patch }) => {
+    server.registerTool("update_invoice", { description: "Update an invoice in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Invoice ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. DueDate, PrivateNote, BillEmail, Line, etc.)"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.sparseUpdate("Invoice", invoice_id, patch)
+          const result = await this.qbService.sparseUpdate("Invoice", Id, patch)
           return this.formatResponse("Invoice updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_invoices", "Search invoices in QuickBooks Online using criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_invoices", { description: "Search invoices in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, DueDate, CustomerRef, Balance, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Invoice", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} invoices.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} invoices.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // ACCOUNTS
     // =========================================================================
 
-    server.tool(
-      "create_account",
-      "Create a chart-of-accounts entry in QuickBooks Online.",
-      {
-        name: z.string().min(1).describe("Account name"),
-        type: z.string().min(1).describe("Account type (e.g. Expense, Income, Bank)"),
-        sub_type: z.string().optional().describe("Account sub-type"),
-        description: z.string().optional().describe("Account description"),
-      },
-      async ({ name, type, sub_type, description }) => {
+    server.registerTool("create_account", { description: "Create a chart-of-accounts entry in QuickBooks Online.", inputSchema: {
+        Name: z.string().describe("Account name (required, unique, max 100 chars)"),
+        AccountType: z.string().describe("Account type (required). Values: Bank, Accounts Receivable, Other Current Asset, Fixed Asset, Other Asset, Accounts Payable, Credit Card, Other Current Liability, Long Term Liability, Equity, Income, Cost of Goods Sold, Expense, Other Income, Other Expense"),
+        AccountSubType: z.string().optional().describe("Detailed sub-type (e.g. Checking, Savings, ServiceFeeIncome)"),
+        Description: z.string().optional().describe("Account description (max 100 chars)"),
+        AcctNum: z.string().optional().describe("User-assigned account number"),
+        SubAccount: z.boolean().optional().describe("Is sub-account"),
+        ParentRef: refSchema.optional().describe("Parent account for sub-accounts"),
+        CurrencyRef: refSchema.optional().describe("Currency (multi-currency)"),
+      } }, async (data) => {
         try {
-          const payload: any = {
-            Name: name,
-            AccountType: type,
-            AccountSubType: sub_type,
-            Description: description,
-          }
-          const result = await this.qbService.create("Account", payload)
+          const result = await this.qbService.create("Account", data)
           return this.formatResponse("Account created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_account",
-      "Update an existing chart-of-accounts entry in QuickBooks.",
-      {
-        account_id: z.string().min(1).describe("Account ID"),
-        patch: z.record(z.any()).describe("Fields to update"),
-      },
-      async ({ account_id, patch }) => {
+    server.registerTool("update_account", { description: "Update a chart-of-accounts entry in QuickBooks (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Account ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. Name, Description, Active, AcctNum)"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.sparseUpdate("Account", account_id, patch)
+          const result = await this.qbService.sparseUpdate("Account", Id, patch)
           return this.formatResponse("Account updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_accounts", "Search chart-of-accounts entries using criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_accounts", { description: "Search chart-of-accounts entries. Filterable fields: Id, Name, AccountType, Classification, Active, CurrentBalance, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Account", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} accounts.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} accounts.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // ITEMS
     // =========================================================================
 
-    server.tool(
-      "create_item",
-      "Create an item in QuickBooks Online.",
-      {
-        name: z.string().min(1).describe("Item name"),
-        type: z.string().min(1).describe("Item type (e.g. Service, Inventory, NonInventory)"),
-        income_account_ref: z.string().min(1).describe("Income account ID"),
-        expense_account_ref: z.string().optional().describe("Expense account ID"),
-        unit_price: z.number().optional().describe("Unit price"),
-        description: z.string().optional().describe("Item description"),
-      },
-      async ({ name, type, income_account_ref, expense_account_ref, unit_price, description }) => {
+    server.registerTool("create_item", { description: "Create an item in QuickBooks Online.", inputSchema: {
+        Name: z.string().describe("Item name (required, unique, max 100 chars)"),
+        Type: z.string().describe("Item type (required): Service, Inventory, NonInventory, Group, FixedAsset, Category"),
+        IncomeAccountRef: refSchema.describe("Income account for sales (required for Service/NonInventory)"),
+        ExpenseAccountRef: refSchema.optional().describe("Expense/COGS account (required for Inventory)"),
+        AssetAccountRef: refSchema.optional().describe("Inventory asset account (required for Inventory)"),
+        Description: z.string().optional().describe("Sales description (max 4000 chars)"),
+        PurchaseDesc: z.string().optional().describe("Purchase description"),
+        UnitPrice: z.number().optional().describe("Sales price per unit"),
+        PurchaseCost: z.number().optional().describe("Purchase cost per unit"),
+        Taxable: z.boolean().optional().describe("Is item taxable"),
+        Sku: z.string().optional().describe("Stock keeping unit (max 100 chars)"),
+        TrackQtyOnHand: z.boolean().optional().describe("Track quantity (required true for Inventory)"),
+        QtyOnHand: z.number().optional().describe("Starting quantity (required for Inventory)"),
+        InvStartDate: z.string().optional().describe("Inventory start date (required for Inventory, YYYY-MM-DD)"),
+        ReorderPoint: z.number().optional().describe("Reorder point for inventory"),
+      } }, async (data) => {
         try {
-          const payload: any = {
-            Name: name,
-            Type: type,
-            IncomeAccountRef: { value: income_account_ref },
-            Description: description,
-            UnitPrice: unit_price,
-          }
-          if (expense_account_ref) {
-            payload.ExpenseAccountRef = { value: expense_account_ref }
-          }
-          const result = await this.qbService.create("Item", payload)
+          const result = await this.qbService.create("Item", data)
           return this.formatResponse("Item created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "read_item",
-      "Read a single item in QuickBooks Online by its ID.",
-      { item_id: z.string().min(1).describe("Item ID") },
-      async ({ item_id }) => {
+    server.registerTool("read_item", { description: "Read an item from QuickBooks Online by its ID.", inputSchema: { id: z.string().describe("Item ID") } }, async ({ id }) => {
         try {
-          const result = await this.qbService.read("Item", item_id)
-          return this.formatResponse(`Item ${item_id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+          const result = await this.qbService.read("Item", id)
+          return this.formatResponse(`Item ${id} retrieved.`, result)
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_item",
-      "Update an existing item in QuickBooks by ID (sparse update).",
-      {
-        item_id: z.string().min(1).describe("Item ID"),
-        patch: z.record(z.any()).describe("Fields to update"),
-      },
-      async ({ item_id, patch }) => {
+    server.registerTool("update_item", { description: "Update an item in QuickBooks (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Item ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. Name, UnitPrice, Description, Active, Sku)"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.sparseUpdate("Item", item_id, patch)
+          const result = await this.qbService.sparseUpdate("Item", Id, patch)
           return this.formatResponse("Item updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_items", "Search items in QuickBooks Online using criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_items", { description: "Search items in QuickBooks Online. Filterable fields: Id, Name, Active, Type, Sku, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Item", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} items.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} items.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // ESTIMATES
     // =========================================================================
 
-    server.tool(
-      "create_estimate",
-      "Create an estimate in QuickBooks Online.",
-      { estimate: z.any().describe("Estimate object to create") },
-      async ({ estimate }) => {
+    server.registerTool("create_estimate", { description: "Create an estimate in QuickBooks Online.", inputSchema: {
+        CustomerRef: refSchema.describe("Customer for this estimate (required)"),
+        Line: z.array(salesItemLineSchema).min(1).describe("Estimate line items (at least one required)"),
+        DocNumber: z.string().optional().describe("Estimate number"),
+        TxnDate: z.string().optional().describe("Transaction date (YYYY-MM-DD)"),
+        DueDate: z.string().optional().describe("Due date (YYYY-MM-DD)"),
+        ExpirationDate: z.string().optional().describe("Expiration date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo"),
+        CustomerMemo: z.object({ value: z.string() }).optional().describe("Message to customer"),
+        BillAddr: addressSchema.optional(),
+        ShipAddr: addressSchema.optional(),
+        BillEmail: emailSchema.optional(),
+        DepartmentRef: refSchema.optional(),
+        TxnStatus: z.enum(["Pending", "Accepted", "Closed", "Rejected"]).optional(),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Estimate", estimate)
+          const result = await this.qbService.create("Estimate", data)
           return this.formatResponse("Estimate created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_estimate",
-      "Get an estimate by Id from QuickBooks Online.",
-      { id: z.string().describe("Estimate ID") },
-      async ({ id }) => {
+    server.registerTool("get_estimate", { description: "Get an estimate by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Estimate ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Estimate", id)
           return this.formatResponse(`Estimate ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_estimate",
-      "Update an estimate in QuickBooks Online.",
-      { estimate: z.any().describe("Estimate object with Id and SyncToken") },
-      async ({ estimate }) => {
+    server.registerTool("update_estimate", { description: "Update an estimate in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Estimate ID to update"),
+        patch: z.record(z.any()).describe("Fields to update"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.update("Estimate", estimate)
+          const result = await this.qbService.sparseUpdate("Estimate", Id, patch)
           return this.formatResponse("Estimate updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_estimate",
-      "Delete (void) an estimate in QuickBooks Online.",
-      { idOrEntity: z.any().describe("Estimate ID or entity object with Id and SyncToken") },
-      async ({ idOrEntity }) => {
+    server.registerTool("delete_estimate", { description: "Delete an estimate in QuickBooks Online.", inputSchema: { id: z.string().describe("Estimate ID") } }, async ({ id }) => {
         try {
-          let entity: any
-          if (typeof idOrEntity === "string" || typeof idOrEntity === "number") {
-            entity = await this.qbService.read("Estimate", String(idOrEntity))
-          } else {
-            entity = idOrEntity
-          }
-          const result = await this.qbService.delete("Estimate", entity)
+          const current = await this.qbService.read("Estimate", id)
+          const result = await this.qbService.delete("Estimate", { Id: current.Id, SyncToken: current.SyncToken })
           return this.formatResponse("Estimate deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_estimates", "Search estimates in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_estimates", { description: "Search estimates in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, TxnStatus, CustomerRef, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Estimate", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} estimates.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} estimates.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // BILLS
     // =========================================================================
 
-    server.tool(
-      "create_bill",
-      "Create a bill in QuickBooks Online.",
-      {
-        bill: z.object({
-          Line: z.array(
-            z.object({
-              Amount: z.number(),
-              DetailType: z.string(),
-              Description: z.string(),
-              AccountRef: z.object({
-                value: z.string(),
-                name: z.string().optional(),
-              }),
-            })
-          ),
-          VendorRef: z.object({
-            value: z.string(),
-            name: z.string().optional(),
-          }),
-          DueDate: z.string(),
-          Balance: z.number(),
-          TotalAmt: z.number(),
-        }),
-      },
-      async ({ bill }) => {
+    server.registerTool("create_bill", { description: "Create a bill (accounts payable) in QuickBooks Online. Line items must use AccountBasedExpenseLineDetail or ItemBasedExpenseLineDetail.", inputSchema: {
+        VendorRef: refSchema.describe("Vendor this bill is from (required)"),
+        Line: z.array(expenseLineSchema).min(1).describe("Bill line items (at least one required)"),
+        DocNumber: z.string().optional().describe("Bill/reference number"),
+        TxnDate: z.string().optional().describe("Bill date (YYYY-MM-DD)"),
+        DueDate: z.string().optional().describe("Payment due date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo"),
+        APAccountRef: refSchema.optional().describe("Accounts payable account"),
+        SalesTermRef: refSchema.optional().describe("Payment terms"),
+        DepartmentRef: refSchema.optional().describe("Department/location"),
+        CurrencyRef: refSchema.optional().describe("Currency (multi-currency)"),
+        ExchangeRate: z.number().optional().describe("Exchange rate"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Bill", bill)
+          const result = await this.qbService.create("Bill", data)
           return this.formatResponse("Bill created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_bill",
-      "Get a bill by ID from QuickBooks Online.",
-      { id: z.string().describe("Bill ID") },
-      async ({ id }) => {
+    server.registerTool("get_bill", { description: "Get a bill by ID from QuickBooks Online.", inputSchema: { id: z.string().describe("Bill ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Bill", id)
           return this.formatResponse(`Bill ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_bill",
-      "Update a bill in QuickBooks Online.",
-      {
-        bill: z.object({
-          Id: z.string(),
-          Line: z.array(
-            z.object({
-              Amount: z.number(),
-              DetailType: z.string(),
-              Description: z.string(),
-              AccountRef: z.object({
-                value: z.string(),
-                name: z.string().optional(),
-              }),
-            })
-          ),
-          VendorRef: z.object({
-            value: z.string(),
-            name: z.string().optional(),
-          }),
-          DueDate: z.string(),
-          Balance: z.number(),
-          TotalAmt: z.number(),
-        }),
-      },
-      async ({ bill }) => {
+    server.registerTool("update_bill", { description: "Update a bill in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Bill ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. DueDate, PrivateNote, Line, VendorRef)"),
+      } }, async ({ Id, patch }) => {
         try {
-          // Fetch current to get SyncToken
-          const current = await this.qbService.read("Bill", bill.Id)
-          const merged = { ...bill, SyncToken: current.SyncToken }
-          const result = await this.qbService.update("Bill", merged)
+          const result = await this.qbService.sparseUpdate("Bill", Id, patch)
           return this.formatResponse("Bill updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_bill",
-      "Delete a bill in QuickBooks Online.",
-      {
-        bill: z.object({
-          Id: z.string(),
-          SyncToken: z.string(),
-        }),
-      },
-      async ({ bill }) => {
+    server.registerTool("delete_bill", { description: "Delete a bill in QuickBooks Online.", inputSchema: { id: z.string().describe("Bill ID") } }, async ({ id }) => {
         try {
-          const result = await this.qbService.delete("Bill", bill)
+          const current = await this.qbService.read("Bill", id)
+          const result = await this.qbService.delete("Bill", { Id: current.Id, SyncToken: current.SyncToken })
           return this.formatResponse("Bill deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_bills", "Search bills in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_bills", { description: "Search bills in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, DueDate, VendorRef, Balance, TotalAmt, APAccountRef, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Bill", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bills.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bills.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // VENDORS
     // =========================================================================
 
-    server.tool(
-      "create_vendor",
-      "Create a vendor in QuickBooks Online.",
-      {
-        vendor: z.object({
-          DisplayName: z.string(),
-          GivenName: z.string().optional(),
-          FamilyName: z.string().optional(),
-          CompanyName: z.string().optional(),
-          PrimaryEmailAddr: z.object({ Address: z.string().optional() }).optional(),
-          PrimaryPhone: z.object({ FreeFormNumber: z.string().optional() }).optional(),
-          BillAddr: z
-            .object({
-              Line1: z.string().optional(),
-              City: z.string().optional(),
-              Country: z.string().optional(),
-              CountrySubDivisionCode: z.string().optional(),
-              PostalCode: z.string().optional(),
-            })
-            .optional(),
-        }),
-      },
-      async ({ vendor }) => {
+    server.registerTool("create_vendor", { description: "Create a vendor in QuickBooks Online.", inputSchema: {
+        DisplayName: z.string().describe("Unique vendor display name (required)"),
+        GivenName: z.string().optional().describe("First name"),
+        MiddleName: z.string().optional().describe("Middle name"),
+        FamilyName: z.string().optional().describe("Last name"),
+        CompanyName: z.string().optional().describe("Company name"),
+        Title: z.string().optional().describe("Title (Mr., Mrs.)"),
+        Suffix: z.string().optional().describe("Suffix (Jr., Sr.)"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Email"),
+        PrimaryPhone: phoneSchema.optional().describe("Phone"),
+        Mobile: phoneSchema.optional().describe("Mobile phone"),
+        Fax: phoneSchema.optional().describe("Fax number"),
+        BillAddr: addressSchema.optional().describe("Billing/mailing address"),
+        AcctNum: z.string().optional().describe("Account number with this vendor"),
+        TaxIdentifier: z.string().optional().describe("Tax ID / EIN"),
+        Vendor1099: z.boolean().optional().describe("Is 1099 vendor"),
+        TermRef: refSchema.optional().describe("Payment terms"),
+        CurrencyRef: refSchema.optional().describe("Currency (multi-currency)"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Vendor", vendor)
+          const result = await this.qbService.create("Vendor", data)
           return this.formatResponse("Vendor created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_vendor",
-      "Get a vendor by ID from QuickBooks Online.",
-      { id: z.string().describe("Vendor ID") },
-      async ({ id }) => {
+    server.registerTool("get_vendor", { description: "Get a vendor by ID from QuickBooks Online.", inputSchema: { id: z.string().describe("Vendor ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Vendor", id)
           return this.formatResponse(`Vendor ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_vendor",
-      "Update a vendor in QuickBooks Online.",
-      {
-        vendor: z.object({
-          Id: z.string(),
-          SyncToken: z.string(),
-          DisplayName: z.string(),
-          GivenName: z.string().optional(),
-          FamilyName: z.string().optional(),
-          CompanyName: z.string().optional(),
-          PrimaryEmailAddr: z.object({ Address: z.string().optional() }).optional(),
-          PrimaryPhone: z.object({ FreeFormNumber: z.string().optional() }).optional(),
-          BillAddr: z
-            .object({
-              Line1: z.string().optional(),
-              City: z.string().optional(),
-              Country: z.string().optional(),
-              CountrySubDivisionCode: z.string().optional(),
-              PostalCode: z.string().optional(),
-            })
-            .optional(),
-        }),
-      },
-      async ({ vendor }) => {
+    server.registerTool("update_vendor", { description: "Update a vendor in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Vendor ID to update"),
+        DisplayName: z.string().optional().describe("Display name"),
+        GivenName: z.string().optional().describe("First name"),
+        FamilyName: z.string().optional().describe("Last name"),
+        CompanyName: z.string().optional().describe("Company name"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Email"),
+        PrimaryPhone: phoneSchema.optional().describe("Phone"),
+        BillAddr: addressSchema.optional().describe("Address"),
+        Active: z.boolean().optional().describe("Active status"),
+        AcctNum: z.string().optional().describe("Account number"),
+        Vendor1099: z.boolean().optional().describe("1099 vendor"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.update("Vendor", vendor)
+          const result = await this.qbService.sparseUpdate("Vendor", data.Id, data)
           return this.formatResponse("Vendor updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_vendor",
-      "Delete a vendor in QuickBooks Online.",
-      {
-        vendor: z.object({
-          Id: z.string(),
-          SyncToken: z.string(),
-        }),
-      },
-      async ({ vendor }) => {
+    server.registerTool("delete_vendor", { description: "Delete (make inactive) a vendor in QuickBooks Online.", inputSchema: { id: z.string().describe("Vendor ID") } }, async ({ id }) => {
         try {
-          // Vendors are made inactive (Active: false) rather than hard-deleted
-          const entity = { ...vendor, Active: false }
-          const result = await this.qbService.update("Vendor", entity)
-          return this.formatResponse("Vendor deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+          const result = await this.qbService.sparseUpdate("Vendor", id, { Active: false })
+          return this.formatResponse("Vendor deactivated.", result)
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_vendors", "Search vendors in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_vendors", { description: "Search vendors in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, CompanyName, Active, Balance, Vendor1099, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Vendor", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} vendors.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} vendors.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // EMPLOYEES
     // =========================================================================
 
-    server.tool(
-      "create_employee",
-      "Create an employee in QuickBooks Online.",
-      { employee: z.any().describe("Employee object to create") },
-      async ({ employee }) => {
+    server.registerTool("create_employee", { description: "Create an employee in QuickBooks Online. At least GivenName or FamilyName is required.", inputSchema: {
+        GivenName: z.string().optional().describe("First name (required if FamilyName not provided)"),
+        FamilyName: z.string().optional().describe("Last name (required if GivenName not provided)"),
+        DisplayName: z.string().optional().describe("Display name (auto-generated from names if omitted)"),
+        MiddleName: z.string().optional().describe("Middle name"),
+        Title: z.string().optional().describe("Title"),
+        Suffix: z.string().optional().describe("Suffix"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Email"),
+        PrimaryPhone: phoneSchema.optional().describe("Phone"),
+        Mobile: phoneSchema.optional().describe("Mobile phone"),
+        PrimaryAddr: addressSchema.optional().describe("Primary address"),
+        SSN: z.string().optional().describe("Social security number"),
+        EmployeeNumber: z.string().optional().describe("Employee number/ID"),
+        BillableTime: z.boolean().optional().describe("Has billable time"),
+        BillRate: z.number().optional().describe("Billing rate"),
+        HiredDate: z.string().optional().describe("Hire date (YYYY-MM-DD)"),
+        BirthDate: z.string().optional().describe("Birth date (YYYY-MM-DD)"),
+        Gender: z.enum(["Male", "Female"]).optional().describe("Gender"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Employee", employee)
+          const result = await this.qbService.create("Employee", data)
           return this.formatResponse("Employee created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_employee",
-      "Get an employee by Id from QuickBooks Online.",
-      { id: z.string().describe("Employee ID") },
-      async ({ id }) => {
+    server.registerTool("get_employee", { description: "Get an employee by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Employee ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Employee", id)
           return this.formatResponse(`Employee ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_employee",
-      "Update an employee in QuickBooks Online.",
-      { employee: z.any().describe("Employee object with Id and SyncToken") },
-      async ({ employee }) => {
+    server.registerTool("update_employee", { description: "Update an employee in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Employee ID to update"),
+        GivenName: z.string().optional().describe("First name"),
+        FamilyName: z.string().optional().describe("Last name"),
+        DisplayName: z.string().optional().describe("Display name"),
+        PrimaryEmailAddr: emailSchema.optional().describe("Email"),
+        PrimaryPhone: phoneSchema.optional().describe("Phone"),
+        PrimaryAddr: addressSchema.optional().describe("Address"),
+        Active: z.boolean().optional().describe("Active status"),
+        BillRate: z.number().optional().describe("Billing rate"),
+        HiredDate: z.string().optional().describe("Hire date"),
+        ReleasedDate: z.string().optional().describe("Termination date"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.update("Employee", employee)
+          const result = await this.qbService.sparseUpdate("Employee", data.Id, data)
           return this.formatResponse("Employee updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_employees", "Search employees in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_employees", { description: "Search employees in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, Active, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Employee", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} employees.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} employees.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // JOURNAL ENTRIES
     // =========================================================================
 
-    server.tool(
-      "create_journal_entry",
-      "Create a journal entry in QuickBooks Online.",
-      { journalEntry: z.any().describe("Journal entry object to create") },
-      async ({ journalEntry }) => {
+    server.registerTool("create_journal_entry", { description: "Create a journal entry in QuickBooks Online. Debits must equal credits.", inputSchema: {
+        Line: z.array(journalEntryLineSchema).min(2).describe("Journal entry lines (at least 2 required; debits must equal credits)"),
+        DocNumber: z.string().optional().describe("Journal entry number"),
+        TxnDate: z.string().optional().describe("Transaction date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo"),
+        DepartmentRef: refSchema.optional().describe("Department/location"),
+        CurrencyRef: refSchema.optional().describe("Currency (multi-currency)"),
+        ExchangeRate: z.number().optional().describe("Exchange rate"),
+        Adjustment: z.boolean().optional().describe("Is this an adjustment entry"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("JournalEntry", journalEntry)
+          const result = await this.qbService.create("JournalEntry", data)
           return this.formatResponse("Journal entry created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_journal_entry",
-      "Get a journal entry by Id from QuickBooks Online.",
-      { id: z.string().describe("Journal entry ID") },
-      async ({ id }) => {
+    server.registerTool("get_journal_entry", { description: "Get a journal entry by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Journal entry ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("JournalEntry", id)
           return this.formatResponse(`Journal entry ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_journal_entry",
-      "Update a journal entry in QuickBooks Online.",
-      { journalEntry: z.any().describe("Journal entry object with Id and SyncToken") },
-      async ({ journalEntry }) => {
+    server.registerTool("update_journal_entry", { description: "Update a journal entry in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Journal entry ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. Line, TxnDate, PrivateNote)"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.update("JournalEntry", journalEntry)
+          const result = await this.qbService.sparseUpdate("JournalEntry", Id, patch)
           return this.formatResponse("Journal entry updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_journal_entry",
-      "Delete (make inactive) a journal entry in QuickBooks Online.",
-      { idOrEntity: z.any().describe("Journal entry ID or entity object with Id and SyncToken") },
-      async ({ idOrEntity }) => {
+    server.registerTool("delete_journal_entry", { description: "Delete a journal entry in QuickBooks Online.", inputSchema: { id: z.string().describe("Journal entry ID") } }, async ({ id }) => {
         try {
-          let entity: any
-          if (typeof idOrEntity === "string" || typeof idOrEntity === "number") {
-            entity = await this.qbService.read("JournalEntry", String(idOrEntity))
-          } else {
-            entity = idOrEntity
-          }
-          const result = await this.qbService.delete("JournalEntry", entity)
+          const current = await this.qbService.read("JournalEntry", id)
+          const result = await this.qbService.delete("JournalEntry", { Id: current.Id, SyncToken: current.SyncToken })
           return this.formatResponse("Journal entry deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_journal_entries", "Search journal entries in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_journal_entries", { description: "Search journal entries in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("JournalEntry", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} journal entries.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} journal entries.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // BILL PAYMENTS
     // =========================================================================
 
-    server.tool(
-      "create_bill_payment",
-      "Create a bill payment in QuickBooks Online.",
-      { billPayment: z.any().describe("Bill payment object to create") },
-      async ({ billPayment }) => {
+    server.registerTool("create_bill_payment", { description: "Create a bill payment in QuickBooks Online. Links a payment to one or more bills.", inputSchema: {
+        VendorRef: refSchema.describe("Vendor being paid (required)"),
+        PayType: z.enum(["Check", "CreditCard"]).describe("Payment type (required)"),
+        TotalAmt: z.number().describe("Total payment amount (required)"),
+        Line: z.array(billPaymentLineSchema).min(1).describe("Lines linking to bills being paid (required)"),
+        CheckPayment: z.object({
+          BankAccountRef: refSchema.describe("Bank account for check payment"),
+          PrintStatus: z.enum(["NotSet", "NeedToPrint", "PrintComplete"]).optional(),
+        }).optional().describe("Required when PayType is 'Check'"),
+        CreditCardPayment: z.object({
+          CCAccountRef: refSchema.describe("Credit card account"),
+        }).optional().describe("Required when PayType is 'CreditCard'"),
+        DocNumber: z.string().optional().describe("Payment reference number"),
+        TxnDate: z.string().optional().describe("Payment date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo"),
+        APAccountRef: refSchema.optional().describe("Accounts payable account"),
+        DepartmentRef: refSchema.optional().describe("Department/location"),
+        CurrencyRef: refSchema.optional(),
+        ExchangeRate: z.number().optional(),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("BillPayment", billPayment)
+          const result = await this.qbService.create("BillPayment", data)
           return this.formatResponse("Bill payment created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_bill_payment",
-      "Get a bill payment by Id from QuickBooks Online.",
-      { id: z.string().describe("Bill payment ID") },
-      async ({ id }) => {
+    server.registerTool("get_bill_payment", { description: "Get a bill payment by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Bill payment ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("BillPayment", id)
           return this.formatResponse(`Bill payment ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_bill_payment",
-      "Update a bill payment in QuickBooks Online.",
-      { billPayment: z.any().describe("Bill payment object with Id and SyncToken") },
-      async ({ billPayment }) => {
+    server.registerTool("update_bill_payment", { description: "Update a bill payment in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Bill payment ID to update"),
+        patch: z.record(z.any()).describe("Fields to update"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.update("BillPayment", billPayment)
+          const result = await this.qbService.sparseUpdate("BillPayment", Id, patch)
           return this.formatResponse("Bill payment updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_bill_payment",
-      "Delete (make inactive) a bill payment in QuickBooks Online.",
-      { idOrEntity: z.any().describe("Bill payment ID or entity object with Id and SyncToken") },
-      async ({ idOrEntity }) => {
+    server.registerTool("delete_bill_payment", { description: "Delete a bill payment in QuickBooks Online.", inputSchema: { id: z.string().describe("Bill payment ID") } }, async ({ id }) => {
         try {
-          let entity: any
-          if (typeof idOrEntity === "string" || typeof idOrEntity === "number") {
-            entity = await this.qbService.read("BillPayment", String(idOrEntity))
-          } else {
-            entity = idOrEntity
-          }
-          const result = await this.qbService.delete("BillPayment", entity)
+          const current = await this.qbService.read("BillPayment", id)
+          const result = await this.qbService.delete("BillPayment", { Id: current.Id, SyncToken: current.SyncToken })
           return this.formatResponse("Bill payment deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_bill_payments", "Search bill payments in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_bill_payments", { description: "Search bill payments in QuickBooks Online. Filterable fields: Id, VendorRef, TxnDate, PayType, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("BillPayment", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bill payments.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bill payments.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     // =========================================================================
     // PURCHASES
     // =========================================================================
 
-    server.tool(
-      "create_purchase",
-      "Create a purchase in QuickBooks Online.",
-      { purchase: z.any().describe("Purchase object to create") },
-      async ({ purchase }) => {
+    server.registerTool("create_purchase", { description: "Create a purchase (expense/check/credit card charge) in QuickBooks Online.", inputSchema: {
+        PaymentType: z.enum(["Cash", "Check", "CreditCard"]).describe("Payment type (required)"),
+        AccountRef: refSchema.describe("Bank or credit card account (required)"),
+        Line: z.array(expenseLineSchema).min(1).describe("Purchase line items (at least one required)"),
+        EntityRef: refSchema.optional().describe("Associated vendor, customer, or employee"),
+        DocNumber: z.string().optional().describe("Reference/check number"),
+        TxnDate: z.string().optional().describe("Transaction date (YYYY-MM-DD)"),
+        PrivateNote: z.string().optional().describe("Internal memo"),
+        DepartmentRef: refSchema.optional().describe("Department/location"),
+        CurrencyRef: refSchema.optional().describe("Currency (multi-currency)"),
+        ExchangeRate: z.number().optional().describe("Exchange rate"),
+        Credit: z.boolean().optional().describe("True for credit card refund"),
+        PaymentMethodRef: refSchema.optional().describe("Payment method"),
+      } }, async (data) => {
         try {
-          const result = await this.qbService.create("Purchase", purchase)
+          const result = await this.qbService.create("Purchase", data)
           return this.formatResponse("Purchase created successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "get_purchase",
-      "Get a purchase by Id from QuickBooks Online.",
-      { id: z.string().describe("Purchase ID") },
-      async ({ id }) => {
+    server.registerTool("get_purchase", { description: "Get a purchase by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Purchase ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Purchase", id)
           return this.formatResponse(`Purchase ${id} retrieved.`, result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "update_purchase",
-      "Update a purchase in QuickBooks Online.",
-      { purchase: z.any().describe("Purchase object with Id and SyncToken") },
-      async ({ purchase }) => {
+    server.registerTool("update_purchase", { description: "Update a purchase in QuickBooks Online (sparse update). SyncToken is fetched automatically.", inputSchema: {
+        Id: z.string().describe("Purchase ID to update"),
+        patch: z.record(z.any()).describe("Fields to update (e.g. TxnDate, PrivateNote, Line)"),
+      } }, async ({ Id, patch }) => {
         try {
-          const result = await this.qbService.update("Purchase", purchase)
+          const result = await this.qbService.sparseUpdate("Purchase", Id, patch)
           return this.formatResponse("Purchase updated successfully.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool(
-      "delete_purchase",
-      "Delete (make inactive) a purchase in QuickBooks Online.",
-      { idOrEntity: z.any().describe("Purchase ID or entity object with Id and SyncToken") },
-      async ({ idOrEntity }) => {
+    server.registerTool("delete_purchase", { description: "Delete a purchase in QuickBooks Online.", inputSchema: { id: z.string().describe("Purchase ID") } }, async ({ id }) => {
         try {
-          let entity: any
-          if (typeof idOrEntity === "string" || typeof idOrEntity === "number") {
-            entity = await this.qbService.read("Purchase", String(idOrEntity))
-          } else {
-            entity = idOrEntity
-          }
-          const result = await this.qbService.delete("Purchase", entity)
+          const current = await this.qbService.read("Purchase", id)
+          const result = await this.qbService.delete("Purchase", { Id: current.Id, SyncToken: current.SyncToken })
           return this.formatResponse("Purchase deleted.", result)
-        } catch (e) {
-          return this.formatError(e)
-        }
+        } catch (e) { return this.formatError(e) }
       }
     )
 
-    server.tool("search_purchases", "Search purchases in QuickBooks Online that match given criteria.", searchOptionsSchema, async (opts) => {
+    server.registerTool("search_purchases", { description: "Search purchases in QuickBooks Online. Filterable fields: Id, TxnDate, PaymentType, AccountRef, EntityRef, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Purchase", opts)
-        return this.formatResponse(
-          typeof result === "number" ? `Count: ${result}` : `Found ${result.length} purchases.`,
-          result
-        )
-      } catch (e) {
-        return this.formatError(e)
-      }
+        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} purchases.`, result)
+      } catch (e) { return this.formatError(e) }
     })
 
     return server
