@@ -22,7 +22,7 @@ export class QuickBooksService {
   }
 
   private get baseUrl(): string {
-    const prefix = this.environment === "production" ? "" : "sandbox-"
+    const prefix = this.environment.toLowerCase() === "production" ? "" : "sandbox-"
     return `https://${prefix}quickbooks.api.intuit.com/v3/company/${this.realmId}`
   }
 
