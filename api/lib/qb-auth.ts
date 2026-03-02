@@ -2,8 +2,15 @@ import { createMiddleware } from "hono/factory"
 import { HTTPException } from "hono/http-exception"
 
 /**
- * Middleware that extracts QB OAuth tokens and realm ID from request headers
- * and attaches them to the execution context as props for the McpAgent.
+ * Middleware that extracts the Bearer access token and QB-specific headers,
+ * then attaches them to the execution context as props for the McpAgent.
+ *
+ * The realm ID can come from either:
+ * - X-QB-Realm-Id header (set via LibreChat customUserVars)
+ * - QUICKBOOKS_REALM_ID env var (server-side fallback)
+ *
+ * Token refresh is handled by LibreChat's OAuth layer — it calls our /token
+ * endpoint with grant_type=refresh_token when the access token expires.
  */
 export const qbBearerTokenAuthMiddleware = createMiddleware<{
   Bindings: Env
@@ -15,11 +22,22 @@ export const qbBearerTokenAuthMiddleware = createMiddleware<{
   }
 
   const accessToken = authHeader.substring(7)
+
+  // Realm ID: prefer header (per-user via customUserVars), fall back to env var
+  const realmId = c.req.header("X-QB-Realm-Id") || c.env.QUICKBOOKS_REALM_ID || ""
+
+  // Environment: prefer header, fall back to env var, default to sandbox
+  const environment = c.req.header("X-QB-Environment") || c.env.QUICKBOOKS_ENVIRONMENT || "sandbox"
+
+  // Refresh token: optional header for service-layer auto-refresh on 401
   const refreshToken = c.req.header("X-QB-Refresh-Token") || ""
-  const realmId = c.req.header("X-QB-Realm-Id") || ""
+
+  console.log(`[QB Auth] realmId=${realmId} env=${environment} hasToken=${!!accessToken} hasRefresh=${!!refreshToken}`)
 
   if (!realmId) {
-    throw new HTTPException(400, { message: "Missing X-QB-Realm-Id header" })
+    throw new HTTPException(400, {
+      message: "Missing QuickBooks Realm ID. Set X-QB-Realm-Id header or QUICKBOOKS_REALM_ID env var.",
+    })
   }
 
   // @ts-ignore Props injected for McpAgent
@@ -27,6 +45,7 @@ export const qbBearerTokenAuthMiddleware = createMiddleware<{
     accessToken,
     refreshToken,
     realmId,
+    environment,
   }
 
   await next()

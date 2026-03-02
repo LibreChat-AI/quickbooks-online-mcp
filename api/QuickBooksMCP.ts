@@ -37,8 +37,9 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     return new QuickBooksService(
       this.env,
       this.props.accessToken,
-      this.props.refreshToken,
-      this.props.realmId
+      this.props.realmId,
+      this.props.environment,
+      this.props.refreshToken
     )
   }
 

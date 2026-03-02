@@ -11,16 +11,18 @@ export class QuickBooksService {
   private accessToken: string
   private refreshToken: string
   private realmId: string
+  private environment: string
 
-  constructor(env: Env, accessToken: string, refreshToken: string, realmId: string) {
+  constructor(env: Env, accessToken: string, realmId: string, environment: string, refreshToken = "") {
     this.env = env
     this.accessToken = accessToken
     this.refreshToken = refreshToken
     this.realmId = realmId
+    this.environment = environment
   }
 
   private get baseUrl(): string {
-    const prefix = this.env.QUICKBOOKS_ENVIRONMENT === "production" ? "" : "sandbox-"
+    const prefix = this.environment === "production" ? "" : "sandbox-"
     return `https://${prefix}quickbooks.api.intuit.com/v3/company/${this.realmId}`
   }
 
@@ -30,6 +32,8 @@ export class QuickBooksService {
    */
   private async makeRequest(endpoint: string, options: RequestInit = {}): Promise<any> {
     const url = `${this.baseUrl}${endpoint}`
+
+    console.log(`[QB API] ${options.method || "GET"} ${url}`)
 
     const doFetch = (token: string) =>
       fetch(url, {
@@ -45,6 +49,7 @@ export class QuickBooksService {
     let response = await doFetch(this.accessToken)
 
     if (response.status === 401) {
+      console.log("[QB API] 401 received, attempting token refresh...")
       await this.refreshAccessToken()
       response = await doFetch(this.accessToken)
     }
@@ -57,8 +62,21 @@ export class QuickBooksService {
     return response.json()
   }
 
+  /**
+   * Refresh the access token using the client credentials and the stored refresh token.
+   * Called automatically on 401 responses.
+   */
   private async refreshAccessToken(): Promise<void> {
     const tokenUrl = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
+
+    // We need a refresh token to refresh. If we don't have one stored,
+    // we can't refresh — the 401 will propagate and LibreChat will
+    // handle re-authentication at the OAuth layer.
+    if (!this.refreshToken) {
+      console.log("[QB API] No refresh token available, cannot refresh")
+      return
+    }
+
     const response = await fetch(tokenUrl, {
       method: "POST",
       headers: {
@@ -73,13 +91,16 @@ export class QuickBooksService {
     })
 
     if (!response.ok) {
-      throw new Error("Failed to refresh QuickBooks access token")
+      console.log(`[QB API] Token refresh failed: ${response.status}`)
+      return
     }
 
     const data = (await response.json()) as {
       access_token: string
       refresh_token?: string
     }
+
+    console.log("[QB API] Token refreshed successfully")
     this.accessToken = data.access_token
     if (data.refresh_token) {
       this.refreshToken = data.refresh_token
@@ -113,10 +134,11 @@ export class QuickBooksService {
 
   /**
    * Update an entity (full or sparse).
-   * POST /v3/company/{realmId}/{entityName}?operation=update
+   * POST /v3/company/{realmId}/{entityName}
+   * (Same endpoint as create — QB distinguishes by the presence of Id + SyncToken)
    */
   async update(entityName: string, data: Record<string, any>): Promise<any> {
-    const result = await this.makeRequest(`/${entityName.toLowerCase()}?operation=update`, {
+    const result = await this.makeRequest(`/${entityName.toLowerCase()}`, {
       method: "POST",
       body: JSON.stringify(data),
     })
