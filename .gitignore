@@ -2,3 +2,7 @@
 
 node_modules
 dist
+
+.dev.vars
+.wrangler
+worker-configuration.d.ts

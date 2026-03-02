@@ -1,0 +1,29 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "quickbooks-online-mcp-server",
+	"main": "api/index.ts",
+	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_date": "2025-03-19",
+	"observability": {
+		"enabled": true
+	},
+	"dev": {
+		"port": 3000
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"QuickBooksMCP"
+			]
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "QuickBooksMCP",
+				"name": "QB_MCP_OBJECT"
+			}
+		]
+	}
+}

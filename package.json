@@ -1,39 +1,32 @@
 {
-    "name": "@qboapi/qbo-mcp-server",
-    "version": "0.0.1",
-    "description": "MCP server implementation for QuickBooks Online integration",
-    "license": "MIT",
-    "main": "dist/index.js",
-    "type": "module",
-    "bin": "./dist/index.js",
-    "files": [
-      "dist"
-    ],
-    "scripts": {
-      "build": "tsc && shx chmod +x dist/*.js",
-      "prepare": "npm run build",
-      "watch": "tsc --watch",
-      "lint:fix": "eslint --fix",
-      "lint": "eslint .",
-      "auth": "node dist/auth-server.js"
-    },
-    "dependencies": {
-      "@modelcontextprotocol/sdk": "^1.6.0",
-      "dotenv": "^16.4.7",
-      "intuit-oauth": "^4.0.0",
-      "node-quickbooks": "^2.0.43",
-      "open": "^9.1.0",
-      "zod": "^3.24.2"
-    },
-    "devDependencies": {
-      "@eslint/js": "^9.22.0",
-      "@types/node": "^22.13.10",
-      "eslint": "^9.22.0",
-      "eslint-config-prettier": "^10.1.1",
-      "globals": "^16.0.0",
-      "prettier": "3.5.3",
-      "shx": "^0.3.4",
-      "typescript": "^5.8.2",
-      "typescript-eslint": "^8.26.1"
-    }
+  "name": "quickbooks-online-mcp-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "QuickBooks Online MCP server on Cloudflare Workers with OAuth 2.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc -b",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types",
+    "lint": "eslint .",
+    "lint:fix": "eslint --fix"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.7.0",
+    "agents": "^0.0.88",
+    "hono": "^4.7.4",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "eslint": "^9.22.0",
+    "eslint-config-prettier": "^10.1.1",
+    "globals": "^16.0.0",
+    "prettier": "3.5.3",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.1",
+    "wrangler": "^4.2.0"
   }
+}
