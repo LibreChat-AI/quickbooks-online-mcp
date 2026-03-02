@@ -212,17 +212,23 @@ Supported operators: `=`, `<`, `>`, `<=`, `>=`, `LIKE`, `IN`
 Deploy to Cloudflare Workers:
 
 ```bash
-# Set secrets
+# Set your Cloudflare account ID (find it in the Cloudflare dashboard)
+export CLOUDFLARE_ACCOUNT_ID=your_account_id
+
+# Login to Cloudflare
+npx wrangler login
+
+# Set secrets (each prompts for the value)
 npx wrangler secret put QUICKBOOKS_CLIENT_ID
 npx wrangler secret put QUICKBOOKS_CLIENT_SECRET
-npx wrangler secret put QUICKBOOKS_REALM_ID        # Optional
-npx wrangler secret put QUICKBOOKS_ENVIRONMENT      # Optional
+npx wrangler secret put QUICKBOOKS_REALM_ID        # Optional if passed via header
+npx wrangler secret put QUICKBOOKS_ENVIRONMENT      # 'sandbox' or 'production'
 
 # Deploy
 npx wrangler deploy
 ```
 
-Update your MCP client's URL to point to the deployed worker URL.
+The deploy outputs your worker URL (e.g. `https://quickbooks-online-mcp-server.<subdomain>.workers.dev`). Update your MCP client config to point to this URL.
 
 ## Sandbox vs Production
 

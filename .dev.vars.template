@@ -2,3 +2,6 @@ QUICKBOOKS_CLIENT_ID=TODO
 QUICKBOOKS_CLIENT_SECRET=TODO
 QUICKBOOKS_REALM_ID=TODO
 QUICKBOOKS_ENVIRONMENT=sandbox
+
+# Required for deployment (not needed for local dev)
+# CLOUDFLARE_ACCOUNT_ID=your_cloudflare_account_id
