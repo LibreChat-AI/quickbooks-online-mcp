@@ -48,12 +48,12 @@ const searchOptionsSchema = {
     )
     .optional()
     .describe("Filters to apply. Each entry is {field, value, operator?}."),
-  limit: z.number().optional().describe("Maximum number of results to return"),
-  offset: z.number().optional().describe("Starting position for pagination"),
+  limit: z.number().optional().describe("Maximum results per page (max 1000, default 100). Use with offset for pagination."),
+  offset: z.number().optional().describe("Starting position for pagination (1-based). E.g. offset=101 for the second page of 100."),
   asc: z.string().optional().describe("Field to sort ascending"),
   desc: z.string().optional().describe("Field to sort descending"),
-  fetchAll: z.boolean().optional().describe("Fetch all results ignoring limit"),
-  count: z.boolean().optional().describe("Return count instead of results"),
+  fetchAll: z.boolean().optional().describe("Fetch all results with automatic pagination (use for large datasets)"),
+  count: z.boolean().optional().describe("Return count only instead of results"),
 }
 
 // -- Line item schemas for transactions --
@@ -145,10 +145,9 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
   }
 
   formatResponse = (
-    description: string,
     data: unknown
   ): { content: Array<{ type: "text"; text: string }> } => ({
-    content: [{ type: "text", text: `${description}\n\n${JSON.stringify(data, null, 2)}` }],
+    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
   })
 
   formatError = (
@@ -188,7 +187,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Customer", data)
-          return this.formatResponse("Customer created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -196,7 +195,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_customer", { description: "Get a customer by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Customer ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Customer", id)
-          return this.formatResponse(`Customer ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -216,7 +215,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.sparseUpdate("Customer", data.Id, data)
-          return this.formatResponse("Customer updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -224,7 +223,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("delete_customer", { description: "Delete (make inactive) a customer in QuickBooks Online.", inputSchema: { id: z.string().describe("Customer ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.sparseUpdate("Customer", id, { Active: false })
-          return this.formatResponse("Customer deactivated.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -232,7 +231,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_customers", { description: "Search customers in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, CompanyName, PrimaryEmailAddr, PrimaryPhone, Balance, Active, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Customer", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} customers.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -260,7 +259,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Invoice", data)
-          return this.formatResponse("Invoice created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -268,7 +267,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("read_invoice", { description: "Read an invoice from QuickBooks Online by its ID.", inputSchema: { id: z.string().describe("Invoice ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Invoice", id)
-          return this.formatResponse(`Invoice ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -279,7 +278,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Invoice", Id, patch)
-          return this.formatResponse("Invoice updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -290,7 +289,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
           const voided = { Id: current.Id, SyncToken: current.SyncToken, sparse: true }
           // QB voids invoices via a POST to the invoice endpoint with ?operation=void (not delete)
           const result = await this.qbService.void("Invoice", voided)
-          return this.formatResponse("Invoice voided.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -298,7 +297,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_invoices", { description: "Search invoices in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, DueDate, CustomerRef, Balance, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Invoice", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} invoices.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -318,7 +317,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Account", data)
-          return this.formatResponse("Account created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -326,7 +325,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_account", { description: "Get a chart-of-accounts entry by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Account ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Account", id)
-          return this.formatResponse(`Account ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -337,7 +336,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Account", Id, patch)
-          return this.formatResponse("Account updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -345,7 +344,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("delete_account", { description: "Delete (make inactive) a chart-of-accounts entry in QuickBooks Online.", inputSchema: { id: z.string().describe("Account ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.sparseUpdate("Account", id, { Active: false })
-          return this.formatResponse("Account deactivated.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -353,7 +352,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_accounts", { description: "Search chart-of-accounts entries. Filterable fields: Id, Name, AccountType, Classification, Active, CurrentBalance, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Account", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} accounts.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -380,7 +379,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Item", data)
-          return this.formatResponse("Item created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -388,7 +387,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("read_item", { description: "Read an item from QuickBooks Online by its ID.", inputSchema: { id: z.string().describe("Item ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Item", id)
-          return this.formatResponse(`Item ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -399,7 +398,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Item", Id, patch)
-          return this.formatResponse("Item updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -407,7 +406,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("delete_item", { description: "Delete (make inactive) an item in QuickBooks Online.", inputSchema: { id: z.string().describe("Item ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.sparseUpdate("Item", id, { Active: false })
-          return this.formatResponse("Item deactivated.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -415,7 +414,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_items", { description: "Search items in QuickBooks Online. Filterable fields: Id, Name, Active, Type, Sku, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Item", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} items.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -440,7 +439,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Estimate", data)
-          return this.formatResponse("Estimate created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -448,7 +447,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_estimate", { description: "Get an estimate by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Estimate ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Estimate", id)
-          return this.formatResponse(`Estimate ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -459,7 +458,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Estimate", Id, patch)
-          return this.formatResponse("Estimate updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -468,7 +467,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const current = await this.qbService.read("Estimate", id)
           const result = await this.qbService.delete("Estimate", { Id: current.Id, SyncToken: current.SyncToken })
-          return this.formatResponse("Estimate deleted.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -476,7 +475,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_estimates", { description: "Search estimates in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, TxnStatus, CustomerRef, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Estimate", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} estimates.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -499,7 +498,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Bill", data)
-          return this.formatResponse("Bill created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -507,7 +506,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_bill", { description: "Get a bill by ID from QuickBooks Online.", inputSchema: { id: z.string().describe("Bill ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Bill", id)
-          return this.formatResponse(`Bill ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -518,7 +517,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Bill", Id, patch)
-          return this.formatResponse("Bill updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -527,7 +526,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const current = await this.qbService.read("Bill", id)
           const result = await this.qbService.delete("Bill", { Id: current.Id, SyncToken: current.SyncToken })
-          return this.formatResponse("Bill deleted.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -535,7 +534,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_bills", { description: "Search bills in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, DueDate, VendorRef, Balance, TotalAmt, APAccountRef, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Bill", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bills.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -564,7 +563,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Vendor", data)
-          return this.formatResponse("Vendor created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -572,7 +571,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_vendor", { description: "Get a vendor by ID from QuickBooks Online.", inputSchema: { id: z.string().describe("Vendor ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Vendor", id)
-          return this.formatResponse(`Vendor ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -592,7 +591,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.sparseUpdate("Vendor", data.Id, data)
-          return this.formatResponse("Vendor updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -600,7 +599,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("delete_vendor", { description: "Delete (make inactive) a vendor in QuickBooks Online.", inputSchema: { id: z.string().describe("Vendor ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.sparseUpdate("Vendor", id, { Active: false })
-          return this.formatResponse("Vendor deactivated.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -608,7 +607,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_vendors", { description: "Search vendors in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, CompanyName, Active, Balance, Vendor1099, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Vendor", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} vendors.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -637,7 +636,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Employee", data)
-          return this.formatResponse("Employee created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -645,7 +644,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_employee", { description: "Get an employee by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Employee ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Employee", id)
-          return this.formatResponse(`Employee ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -665,7 +664,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.sparseUpdate("Employee", data.Id, data)
-          return this.formatResponse("Employee updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -673,7 +672,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("delete_employee", { description: "Delete (make inactive) an employee in QuickBooks Online.", inputSchema: { id: z.string().describe("Employee ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.sparseUpdate("Employee", id, { Active: false })
-          return this.formatResponse("Employee deactivated.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -681,7 +680,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_employees", { description: "Search employees in QuickBooks Online. Filterable fields: Id, DisplayName, GivenName, FamilyName, Active, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Employee", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} employees.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -701,7 +700,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("JournalEntry", data)
-          return this.formatResponse("Journal entry created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -709,7 +708,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_journal_entry", { description: "Get a journal entry by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Journal entry ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("JournalEntry", id)
-          return this.formatResponse(`Journal entry ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -720,7 +719,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("JournalEntry", Id, patch)
-          return this.formatResponse("Journal entry updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -729,7 +728,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const current = await this.qbService.read("JournalEntry", id)
           const result = await this.qbService.delete("JournalEntry", { Id: current.Id, SyncToken: current.SyncToken })
-          return this.formatResponse("Journal entry deleted.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -737,7 +736,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_journal_entries", { description: "Search journal entries in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("JournalEntry", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} journal entries.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -767,7 +766,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("BillPayment", data)
-          return this.formatResponse("Bill payment created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -775,7 +774,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_bill_payment", { description: "Get a bill payment by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Bill payment ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("BillPayment", id)
-          return this.formatResponse(`Bill payment ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -786,7 +785,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("BillPayment", Id, patch)
-          return this.formatResponse("Bill payment updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -795,7 +794,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const current = await this.qbService.read("BillPayment", id)
           const result = await this.qbService.delete("BillPayment", { Id: current.Id, SyncToken: current.SyncToken })
-          return this.formatResponse("Bill payment deleted.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -803,7 +802,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_bill_payments", { description: "Search bill payments in QuickBooks Online. Filterable fields: Id, VendorRef, TxnDate, PayType, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("BillPayment", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} bill payments.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 
@@ -827,7 +826,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async (data) => {
         try {
           const result = await this.qbService.create("Purchase", data)
-          return this.formatResponse("Purchase created successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -835,7 +834,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("get_purchase", { description: "Get a purchase by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Purchase ID") } }, async ({ id }) => {
         try {
           const result = await this.qbService.read("Purchase", id)
-          return this.formatResponse(`Purchase ${id} retrieved.`, result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -846,7 +845,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       } }, async ({ Id, patch }) => {
         try {
           const result = await this.qbService.sparseUpdate("Purchase", Id, patch)
-          return this.formatResponse("Purchase updated successfully.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -855,7 +854,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const current = await this.qbService.read("Purchase", id)
           const result = await this.qbService.delete("Purchase", { Id: current.Id, SyncToken: current.SyncToken })
-          return this.formatResponse("Purchase deleted.", result)
+          return this.formatResponse(result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -863,7 +862,7 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
     server.registerTool("search_purchases", { description: "Search purchases in QuickBooks Online. Filterable fields: Id, TxnDate, PaymentType, AccountRef, EntityRef, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Purchase", opts)
-        return this.formatResponse(typeof result === "number" ? `Count: ${result}` : `Found ${result.length} purchases.`, result)
+        return this.formatResponse(result)
       } catch (e) { return this.formatError(e) }
     })
 

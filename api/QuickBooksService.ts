@@ -213,10 +213,9 @@ export class QuickBooksService {
       asc?: string
       desc?: string
       count?: boolean
-      fetchAll?: boolean
     } = {}
   ): string {
-    const { criteria = [], limit, offset, asc, desc, count, fetchAll } = options
+    const { criteria = [], limit, offset, asc, desc, count } = options
 
     const select = count ? `select count(*) from ${entityName}` : `select * from ${entityName}`
 
@@ -233,7 +232,7 @@ export class QuickBooksService {
     }
     if (asc) query += ` orderby ${asc} asc`
     if (desc) query += ` orderby ${desc} desc`
-    if (!fetchAll && limit) query += ` maxresults ${limit}`
+    if (limit) query += ` maxresults ${limit}`
     if (offset) query += ` startposition ${offset}`
 
     return query
@@ -241,6 +240,8 @@ export class QuickBooksService {
 
   /**
    * High-level search: builds query from structured options and executes it.
+   * When fetchAll is true, paginates through all results (QB max 1000 per page).
+   * When no limit is specified, defaults to QB's max of 1000 per request.
    */
   async search(
     entityName: string,
@@ -254,8 +255,51 @@ export class QuickBooksService {
       fetchAll?: boolean
     } = {}
   ): Promise<any> {
-    const queryString = this.buildQuery(entityName, options)
-    return this.query(queryString)
+    const { fetchAll, ...queryOpts } = options
+
+    if (fetchAll) {
+      // Paginate through all results, 1000 at a time
+      const allResults: any[] = []
+      let startPosition = 1
+      const pageSize = 1000
+
+      while (true) {
+        const queryString = this.buildQuery(entityName, {
+          ...queryOpts,
+          limit: pageSize,
+          offset: startPosition,
+        })
+        const page = await this.query(queryString)
+        if (!Array.isArray(page) || page.length === 0) break
+        allResults.push(...page)
+        if (page.length < pageSize) break
+        startPosition += pageSize
+      }
+
+      return allResults
+    }
+
+    const queryString = this.buildQuery(entityName, queryOpts)
+    const results = await this.query(queryString)
+
+    // If results hit the limit (or QB default of 100), add pagination hint
+    if (Array.isArray(results)) {
+      const effectiveLimit = queryOpts.limit || 100
+      if (results.length >= effectiveLimit) {
+        return {
+          results,
+          pagination: {
+            returned: results.length,
+            limit: effectiveLimit,
+            offset: queryOpts.offset || 1,
+            hasMore: true,
+            hint: `Showing first ${results.length} results. Use offset=${(queryOpts.offset || 1) + effectiveLimit} to get the next page, or use count=true to get total count first.`,
+          },
+        }
+      }
+    }
+
+    return results
   }
 
   /**
