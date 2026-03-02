@@ -2,7 +2,7 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) server for QuickBooks Online, built on Cloudflare Workers with OAuth 2.0 authentication.
 
-Provides 50 tools for managing QuickBooks entities (customers, invoices, bills, vendors, etc.) via any MCP-compatible client.
+Provides 55 tools for managing QuickBooks entities (customers, invoices, bills, vendors, etc.) via any MCP-compatible client.
 
 ## Architecture
 
@@ -162,21 +162,25 @@ The Realm ID is the QuickBooks **Company ID** of the company you want to access.
 2. **Settings page**: Gear icon → Subscriptions and billing → Company ID is at the top
 3. **OAuth callback**: Intuit includes `realmId` as a query parameter in the redirect URL
 
-## Available Tools (50)
+## Available Tools (55)
+
+Full CRUD + search on all 11 QuickBooks entity types:
 
 | Entity | Create | Read/Get | Update | Delete | Search |
 |---|---|---|---|---|---|
 | **Customer** | `create_customer` | `get_customer` | `update_customer` | `delete_customer` | `search_customers` |
-| **Invoice** | `create_invoice` | `read_invoice` | `update_invoice` | — | `search_invoices` |
-| **Account** | `create_account` | — | `update_account` | — | `search_accounts` |
-| **Item** | `create_item` | `read_item` | `update_item` | — | `search_items` |
+| **Invoice** | `create_invoice` | `read_invoice` | `update_invoice` | `delete_invoice` | `search_invoices` |
+| **Account** | `create_account` | `get_account` | `update_account` | `delete_account` | `search_accounts` |
+| **Item** | `create_item` | `read_item` | `update_item` | `delete_item` | `search_items` |
 | **Estimate** | `create_estimate` | `get_estimate` | `update_estimate` | `delete_estimate` | `search_estimates` |
 | **Bill** | `create_bill` | `get_bill` | `update_bill` | `delete_bill` | `search_bills` |
 | **Vendor** | `create_vendor` | `get_vendor` | `update_vendor` | `delete_vendor` | `search_vendors` |
-| **Employee** | `create_employee` | `get_employee` | `update_employee` | — | `search_employees` |
+| **Employee** | `create_employee` | `get_employee` | `update_employee` | `delete_employee` | `search_employees` |
 | **Journal Entry** | `create_journal_entry` | `get_journal_entry` | `update_journal_entry` | `delete_journal_entry` | `search_journal_entries` |
 | **Bill Payment** | `create_bill_payment` | `get_bill_payment` | `update_bill_payment` | `delete_bill_payment` | `search_bill_payments` |
 | **Purchase** | `create_purchase` | `get_purchase` | `update_purchase` | `delete_purchase` | `search_purchases` |
+
+> **Note:** Delete on Customer, Vendor, Employee, Account, and Item performs a **deactivation** (`Active: false`) since QuickBooks doesn't support hard deletion on these entities. Delete on Invoice performs a **void**. Delete on Bill, Estimate, Journal Entry, Bill Payment, and Purchase performs a hard delete.
 
 ### Tool Schemas
 

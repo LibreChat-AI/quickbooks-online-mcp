@@ -284,6 +284,17 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       }
     )
 
+    server.registerTool("delete_invoice", { description: "Void an invoice in QuickBooks Online. Sets the invoice status to voided.", inputSchema: { id: z.string().describe("Invoice ID") } }, async ({ id }) => {
+        try {
+          const current = await this.qbService.read("Invoice", id)
+          const voided = { Id: current.Id, SyncToken: current.SyncToken, sparse: true }
+          // QB voids invoices via a POST to the invoice endpoint with ?operation=void (not delete)
+          const result = await this.qbService.void("Invoice", voided)
+          return this.formatResponse("Invoice voided.", result)
+        } catch (e) { return this.formatError(e) }
+      }
+    )
+
     server.registerTool("search_invoices", { description: "Search invoices in QuickBooks Online. Filterable fields: Id, DocNumber, TxnDate, DueDate, CustomerRef, Balance, TotalAmt, MetaData.CreateTime, MetaData.LastUpdatedTime.", inputSchema: searchOptionsSchema }, async (opts) => {
       try {
         const result = await this.qbService.search("Invoice", opts)
@@ -312,6 +323,14 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
       }
     )
 
+    server.registerTool("get_account", { description: "Get a chart-of-accounts entry by Id from QuickBooks Online.", inputSchema: { id: z.string().describe("Account ID") } }, async ({ id }) => {
+        try {
+          const result = await this.qbService.read("Account", id)
+          return this.formatResponse(`Account ${id} retrieved.`, result)
+        } catch (e) { return this.formatError(e) }
+      }
+    )
+
     server.registerTool("update_account", { description: "Update a chart-of-accounts entry in QuickBooks (sparse update). SyncToken is fetched automatically.", inputSchema: {
         Id: z.string().describe("Account ID to update"),
         patch: z.record(z.any()).describe("Fields to update (e.g. Name, Description, Active, AcctNum)"),
@@ -319,6 +338,14 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const result = await this.qbService.sparseUpdate("Account", Id, patch)
           return this.formatResponse("Account updated successfully.", result)
+        } catch (e) { return this.formatError(e) }
+      }
+    )
+
+    server.registerTool("delete_account", { description: "Delete (make inactive) a chart-of-accounts entry in QuickBooks Online.", inputSchema: { id: z.string().describe("Account ID") } }, async ({ id }) => {
+        try {
+          const result = await this.qbService.sparseUpdate("Account", id, { Active: false })
+          return this.formatResponse("Account deactivated.", result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -373,6 +400,14 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const result = await this.qbService.sparseUpdate("Item", Id, patch)
           return this.formatResponse("Item updated successfully.", result)
+        } catch (e) { return this.formatError(e) }
+      }
+    )
+
+    server.registerTool("delete_item", { description: "Delete (make inactive) an item in QuickBooks Online.", inputSchema: { id: z.string().describe("Item ID") } }, async ({ id }) => {
+        try {
+          const result = await this.qbService.sparseUpdate("Item", id, { Active: false })
+          return this.formatResponse("Item deactivated.", result)
         } catch (e) { return this.formatError(e) }
       }
     )
@@ -631,6 +666,14 @@ export class QuickBooksMCP extends McpAgent<Env, unknown, QBAuthContext> {
         try {
           const result = await this.qbService.sparseUpdate("Employee", data.Id, data)
           return this.formatResponse("Employee updated successfully.", result)
+        } catch (e) { return this.formatError(e) }
+      }
+    )
+
+    server.registerTool("delete_employee", { description: "Delete (make inactive) an employee in QuickBooks Online.", inputSchema: { id: z.string().describe("Employee ID") } }, async ({ id }) => {
+        try {
+          const result = await this.qbService.sparseUpdate("Employee", id, { Active: false })
+          return this.formatResponse("Employee deactivated.", result)
         } catch (e) { return this.formatError(e) }
       }
     )

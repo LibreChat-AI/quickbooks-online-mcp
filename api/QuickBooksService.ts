@@ -158,6 +158,18 @@ export class QuickBooksService {
   }
 
   /**
+   * Void a transaction (e.g. Invoice).
+   * POST /v3/company/{realmId}/{entityName}?operation=void
+   */
+  async void(entityName: string, data: Record<string, any>): Promise<any> {
+    const result = await this.makeRequest(`/${entityName.toLowerCase()}?operation=void`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    })
+    return result[entityName] ?? result
+  }
+
+  /**
    * Run a QB query (SQL-like syntax).
    * GET /v3/company/{realmId}/query?query=...
    *
