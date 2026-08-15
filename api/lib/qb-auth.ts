@@ -1,5 +1,26 @@
 import { createMiddleware } from "hono/factory"
 import { HTTPException } from "hono/http-exception"
+import { protectedResourcePathFor, resourceMetadataUrl } from "./oauth-metadata"
+
+/**
+ * Builds the RFC 9728 §5.1 challenge. Without the `resource_metadata` pointer a
+ * client sees a bare 401 and cannot discover which authorization server guards
+ * this resource, so it silently gives up instead of starting the OAuth flow.
+ */
+function unauthorized(requestUrl: string): HTTPException {
+  const { origin, pathname } = new URL(requestUrl)
+  const metadataUrl = resourceMetadataUrl(origin, protectedResourcePathFor(pathname))
+
+  return new HTTPException(401, {
+    res: new Response("Missing or invalid access token", {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": `Bearer realm="quickbooks-online-mcp", resource_metadata="${metadataUrl}"`,
+        "Content-Type": "text/plain;charset=UTF-8",
+      },
+    }),
+  })
+}
 
 /**
  * Middleware that extracts the Bearer access token and QB-specific headers,
@@ -18,7 +39,7 @@ export const qbBearerTokenAuthMiddleware = createMiddleware<{
   const authHeader = c.req.header("Authorization")
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    throw new HTTPException(401, { message: "Missing or invalid access token" })
+    throw unauthorized(c.req.url)
   }
 
   const accessToken = authHeader.substring(7)
